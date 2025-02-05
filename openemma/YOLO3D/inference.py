@@ -19,7 +19,7 @@ from openemma.YOLO3D.utils.general import (
     non_max_suppression,
     print_args,
     scale_coords,
-)
+    )
 from openemma.YOLO3D.utils.datasets import LoadImages
 import argparse
 import os
@@ -74,7 +74,7 @@ def detect3d(
     save_result,
     output_path,
     roi_filter=None,
-):
+    ):
     current_dir = os.path.dirname(os.path.abspath(__file__))
     imgs_path = []
     if os.path.isfile(source):
@@ -229,16 +229,7 @@ def detect2d(weights, source, imgsz, device, conf=0.5):
     return bbox_list
 
 
-def detect3DFromCVImg(
-    reg_weights,
-    model_select,
-    imgs,
-    calib_file,
-    show_result,
-    save_result,
-    output_path,
-    roi_filter=None,
-):
+def detect3DFromCVImg(reg_weights,model_select,imgs,calib_file,show_result,save_result,output_path,roi_filter=None,):
     current_dir = os.path.dirname(os.path.abspath(__file__))
 
     # load model
@@ -272,9 +263,7 @@ def detect3DFromCVImg(
             if not averages.recognized_class(det.detected_class):
                 continue
             try:
-                detectedObject = DetectedObject(
-                    img, det.detected_class, det.box_2d, calib_file
-                )
+                detectedObject = DetectedObject(img, det.detected_class, det.box_2d, calib_file)
             except Exception as e:
                 print(f"An error occurred: {e}")
                 continue
@@ -360,7 +349,7 @@ def detect2DFromCVImg(weights, im, conf=0.5):
 
 def plot3d(
     img, proj_matrix, det, dimensions, alpha, theta_ray, img_2d=None, roi_filter=None
-):
+    ):
     box_2d = det.box_2d
     # the math! returns X, the corners used for constraint
     location, X = calc_location(
@@ -471,7 +460,7 @@ def main(opt):
         show_result=opt.show_result,
         save_result=opt.save_result,
         output_path=opt.output_path,
-    )
+        )
 
 
 def create_roi_filter(roi_r, roi_w, roi_d):

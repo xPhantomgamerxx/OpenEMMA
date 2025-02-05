@@ -11,13 +11,14 @@ import matplotlib.pyplot as plt
 import torch
 from openai import OpenAI
 from nuscenes import NuScenes
+from truckscenes import TruckScenes
 from pyquaternion import Quaternion
 from scipy.integrate import cumulative_trapezoid
 
 import json
 from openemma.YOLO3D.inference import yolo3d_nuScenes
-from utils import EstimateCurvatureFromTrajectory, IntegrateCurvatureForPoints, OverlayTrajectory, WriteImageSequenceToVideo
-from transformers import MllamaForConditionalGeneration, AutoProcessor, Qwen2VLForConditionalGeneration, AutoTokenizer
+from utils import EstimateCurvatureFromTrajectory, IntegrateCurvatureForPoints, OverlayTrajectory, WriteImageSequenceToVideo, center_crop
+from transformers import MllamaForConditionalGeneration, AutoProcessor, Qwen2VLForConditionalGeneration, AutoTokenizer, AutoModelForCausalLM, pipeline
 from PIL import Image
 from qwen_vl_utils import process_vision_info
 from llava.model.builder import load_pretrained_model
@@ -25,8 +26,11 @@ from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_S
 from llava.utils import disable_torch_init
 from llava.mm_utils import tokenizer_image_token, process_images, get_model_name_from_path
 from llava.conversation import conv_templates
+import logging
 
-client = OpenAI(api_key="[your-openai-api-key]")
+logging.getLogger('transformers').setLevel(logging.ERROR)
+
+client = OpenAI(api_key="-")
 
 OBS_LEN = 10
 FUT_LEN = 10
@@ -35,61 +39,61 @@ TTL_LEN = OBS_LEN + FUT_LEN
 def getMessage(prompt, image=None, args=None):
     if "llama" in args.model_path:
         message = [
-            {"role": "user", "content": [
-                {"type": "image"},
-                {"type": "text", "text": prompt}
-            ]}
+            {"role": "user",
+             "content": [{"type": "image"}, {"type": "text", "text": prompt}]
+             }
         ]
     elif "qwen" in args.model_path:
         message = [
-            {"role": "user", "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt}
-            ]}
+            {"role": "user",
+             "content": [{"type": "image", "image": image},{"type": "text", "text": prompt}]
+             }
+        ]
+    elif "deepseek" in args.model_path:
+        message = [
+            {"role": "user",
+             "content": [{"type": "image", "image": image},{"type": "text", "text": prompt}]
+             }
         ]   
     return message
 
+def vlm_infer(text=None, images=None, sys_message=None, processor=None, model=None, tokenizer=None, args=None):
+    pipe = pipeline("text-generation", model="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", device=0, max_new_tokens=2048)
+    message = [{"role": "user","content": sys_message + text}]
+    
 
 def vlm_inference(text=None, images=None, sys_message=None, processor=None, model=None, tokenizer=None, args=None):
         if  "llama" in args.model_path:
             image = Image.open(images).convert('RGB')
             message = getMessage(text, args=args)
             input_text = processor.apply_chat_template(message, add_generation_prompt=True)
-            inputs = processor(
-                image,
-                input_text,
-                add_special_tokens=False,
-                return_tensors="pt"
-            ).to(model.device)
-
+            inputs = processor(image,input_text,add_special_tokens=False,return_tensors="pt").to(model.device)
             output = model.generate(**inputs, max_new_tokens=2048)
-
             output_text = processor.decode(output[0])
-
             if "llama" in args.model_path:
                 output_text = re.findall(r'<\|start_header_id\|>assistant<\|end_header_id\|>(.*?)<\|eot_id\|>', output_text, re.DOTALL)[0].strip()
             return output_text
         
         elif "qwen" in args.model_path:
-            message = getMessage(text, image=images, args=args)
-            text = processor.apply_chat_template(
-                message, tokenize=False, add_generation_prompt=True
-            )
+            with torch.no_grad():
+                message = getMessage(text, image=images, args=args)
+                text = processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+                image_inputs, video_inputs = process_vision_info(message)
+                inputs = processor(text=[text],images=image_inputs,videos=video_inputs,padding=True,return_tensors="pt",).to(model.device)
+                generated_ids = model.generate(**inputs, max_new_tokens=128)
+                generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+                output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                return output_text[0]
+
+        elif "deepseek" in args.model_path:
+            image = Image.open(images).convert('RGB')
+            message = getMessage(text, args=args)
+            text = processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
             image_inputs, video_inputs = process_vision_info(message)
-            inputs = processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            ).to(model.device)
+            inputs = processor(text=[text],images=image_inputs,videos=video_inputs,padding=True,return_tensors="pt",).to(model.device)
             generated_ids = model.generate(**inputs, max_new_tokens=128)
-            generated_ids_trimmed = [
-                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            output_text = processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
+            generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+            output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
             return output_text[0]
 
         elif "llava" in args.model_path:
@@ -117,18 +121,7 @@ def vlm_inference(text=None, images=None, sys_message=None, processor=None, mode
             image_tensor = process_images([image], processor, model.config)[0]
 
             with torch.inference_mode():
-                output_ids = model.generate(
-                    input_ids,
-                    images=image_tensor.unsqueeze(0).half().cuda(),
-                    image_sizes=[image.size],
-                    do_sample=True,
-                    temperature=0.2,
-                    top_p=None,
-                    num_beams=1,
-                    max_new_tokens=2048,
-                    use_cache=True,
-                    pad_token_id = tokenizer.eos_token_id,
-                )
+                output_ids = model.generate(input_ids,images=image_tensor.unsqueeze(0).half().cuda(),image_sizes=[image.size],do_sample=True,temperature=0.2,top_p=None,num_beams=1,max_new_tokens=2048,use_cache=True,pad_token_id = tokenizer.eos_token_id,)
 
             outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
             return outputs
@@ -194,7 +187,6 @@ def DescribeOrUpdateIntent(obs_images, prev_intent=None, processor=None, model=N
 
     return result
 
-
 def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, given_intent, processor=None, model=None, tokenizer=None, args=None):
     # assert len(obs_images) == len(obs_waypoints)
 
@@ -204,9 +196,16 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
         scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
         object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
         intent_description = DescribeOrUpdateIntent(obs_images, prev_intent=given_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        print(f'Scene Description: {scene_description}')
-        print(f'Object Description: {object_description}')
-        print(f'Intent Description: {intent_description}')
+        print(f'Scene Description: {scene_description} \n')
+        print(f'Object Description: {object_description} \n')
+        print(f'Intent Description: {intent_description} \n')
+    elif args.method == "deepseek":
+        scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
+        object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
+        intent_description = DescribeOrUpdateIntent(obs_images, prev_intent=given_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
+        print(f'Scene Description: {scene_description} \n')
+        print(f'Object Description: {object_description} \n')
+        print(f'Intent Description: {intent_description} \n')
 
     # Convert array waypoints to string.
     obs_waypoints_str = [f"[{x[0]:.2f},{x[1]:.2f}]" for x in obs_waypoints]
@@ -222,6 +221,13 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
     sys_message = ("You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n")
 
     if args.method == "openemma":
+        prompt = f"""These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. 
+        The scene is described as follows: {scene_description}. 
+        The identified critical objects are {object_description}. 
+        The car's intent is {intent_description}. 
+        The 5 second historical velocities and curvatures of the ego car are {obs_speed_curvature_str}. 
+        Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. Write the raw text not markdown or latex. Future speeds and curvatures:"""
+    elif args.method == "deepseek":
         prompt = f"""These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. 
         The scene is described as follows: {scene_description}. 
         The identified critical objects are {object_description}. 
@@ -245,41 +251,57 @@ if __name__ == '__main__':
     parser.add_argument("--dataroot", type=str, default='datasets/NuScenes')
     parser.add_argument("--version", type=str, default='v1.0-mini')
     parser.add_argument("--method", type=str, default='openemma')
+    parser.add_argument("--vehicle", type=str, default='car')
     args = parser.parse_args()
+
+
+    total_memory = torch.cuda.get_device_properties(0).total_memory // (1024 ** 3)
+    gpu_memory_limit = int(total_memory * 0.8)
+    print(f"Max memory Limit: {total_memory}")
+    max_memory = {0: f"{gpu_memory_limit}GiB"}
 
     
     if "llama" in args.model_path:
         model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-        model = MllamaForConditionalGeneration.from_pretrained(
-            model_id,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-        )
+        model = MllamaForConditionalGeneration.from_pretrained(model_id,torch_dtype=torch.bfloat16,device_map="auto")
         processor = AutoProcessor.from_pretrained(model_id)
         tokenizer=None
     elif "qwen" in args.model_path:
-        model = Qwen2VLForConditionalGeneration.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
+        model = Qwen2VLForConditionalGeneration.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto", max_memory={0: "17GiB"})
         processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
         tokenizer=None
     elif "llava" in args.model_path:
         disable_torch_init()
         tokenizer, model, processor, context_len = load_pretrained_model("liuhaotian/llava-v1.6-mistral-7b", None, "llava-v1.6-mistral-7b")
+        model.cuda()
         image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-        
+    elif "deepseek" in args.model_path: 
+        tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+        model = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
     else:
         model = None
         processor = None
         tokenizer=None
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    timestamp = args.model_path + f"_results/{args.method}/" + timestamp
+    #timestamp = args.model_path + f"_results/{args.method}/" + timestamp
+    if "car" in args.vehicle:
+        timestamp = f"car_results/{args.model_path}/" + args.method + "/" + timestamp
+    elif "truck" in args.vehicle:
+        timestamp = f"truck_results/{args.model_path}/" + args.method + "/" + timestamp
     os.makedirs(timestamp, exist_ok=True)
 
     # Load the dataset
-    nusc = NuScenes(version=args.version, dataroot=args.dataroot)
+    if "car" in args.vehicle:
+        nusc = NuScenes(version=args.version, dataroot=args.dataroot)
+        # Iterate the scenes
+        scenes = nusc.scene
+        scene_list = ["scene-0061"]#["scene-0103", "scene-1077"]
 
-    # Iterate the scenes
-    scenes = nusc.scene
+    elif "truck" in args.vehicle:
+        nusc = TruckScenes( args.version, args.dataroot, True )
+        scenes = nusc.scene
+        scene_list=["scene-0044384af3d8494e913fb8b14915239e-3"]
 
     for scene in scenes:
         token = scene['token']
@@ -288,7 +310,7 @@ if __name__ == '__main__':
         name = scene['name']
         description = scene['description']
 
-        if not name in ["scene-0103", "scene-1077"]:
+        if not name in scene_list:
             continue
 
         # Get all image and pose in this scene
@@ -300,7 +322,10 @@ if __name__ == '__main__':
             sample = nusc.get('sample', curr_sample_token)
 
             # Get the front camera image of the sample.
-            cam_front_data = nusc.get('sample_data', sample['data']['CAM_FRONT'])
+            if "car" in args.vehicle:
+                cam_front_data = nusc.get('sample_data', sample['data']['CAM_FRONT'])
+            elif "truck" in args.vehicle:
+                cam_front_data = nusc.get('sample_data', sample['data']['CAMERA_LEFT_FRONT'])
             # nusc.render_sample_data(cam_front_data['token'])
 
 
@@ -387,16 +412,14 @@ if __name__ == '__main__':
             else:
                 with open(os.path.join(curr_image), "rb") as image_file:
                     img = cv2.imdecode(np.frombuffer(image_file.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
-
+                    img = yolo3d_nuScenes(img, calib=obs_camera_params[-1])[0]
+            if "smth" in args.vehicle:
+                img = center_crop(img)
             for rho in range(3):
                 # Assemble the prompt.
                 if not "gpt" in args.model_path:
                     obs_images = curr_image
-                (prediction,
-                scene_description,
-                object_description,
-                updated_intent) = GenerateMotion(obs_images, obs_ego_traj_world, obs_ego_velocities,
-                                                obs_ego_curvatures, prev_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
+                (prediction,scene_description,object_description,updated_intent) = GenerateMotion(obs_images, obs_ego_traj_world, obs_ego_velocities,obs_ego_curvatures, prev_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
 
                 # Process the output.
                 prev_intent = updated_intent  # Stateful intent

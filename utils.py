@@ -309,3 +309,16 @@ def WriteImageSequenceToVideo(cam_images_sequence: list, filename):
 
     # Release the video writer
     video_writer.release()
+
+def center_crop(image, target_size=(900,1600)):
+    target_height, target_width = target_size
+    original_height, original_width = image.shape[:2]  # Extract H and W only
+
+    # Compute crop coordinates (centered)
+    crop_x = max((original_width - target_width) // 2, 0)
+    crop_y = max((original_height - target_height) // 2, 0)
+
+    # Crop the image
+    cropped_image = image[crop_y:crop_y + target_height, crop_x:crop_x + target_width]
+
+    return cropped_image
