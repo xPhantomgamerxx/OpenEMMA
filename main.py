@@ -57,10 +57,6 @@ def getMessage(prompt, image=None, args=None):
         ]   
     return message
 
-def vlm_infer(text=None, images=None, sys_message=None, processor=None, model=None, tokenizer=None, args=None):
-    pipe = pipeline("text-generation", model="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", device=0, max_new_tokens=2048)
-    message = [{"role": "user","content": sys_message + text}]
-    
 
 def vlm_inference(text=None, images=None, sys_message=None, processor=None, model=None, tokenizer=None, args=None):
         if  "llama" in args.model_path:
