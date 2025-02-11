@@ -81,17 +81,6 @@ def vlm_inference(text=None, images=None, sys_message=None, processor=None, mode
                 output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
                 return output_text[0]
 
-        elif "deepseek" in args.model_path:
-            image = Image.open(images).convert('RGB')
-            message = getMessage(text, args=args)
-            text = processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
-            image_inputs, video_inputs = process_vision_info(message)
-            inputs = processor(text=[text],images=image_inputs,videos=video_inputs,padding=True,return_tensors="pt",).to(model.device)
-            generated_ids = model.generate(**inputs, max_new_tokens=128)
-            generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-            output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-            return output_text[0]
-
         elif "llava" in args.model_path:
             conv_mode = "mistral_instruct"
             image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
@@ -153,7 +142,8 @@ def SceneDescription(obs_images, processor=None, model=None, tokenizer=None, arg
 
     if "llava" in args.model_path:
         prompt = f"""You are an autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Provide a concise description of the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings."""
-
+    print(f"len(images){len(obs_images)}")
+    print(f"{obs_images}")
     result = vlm_inference(text=prompt, images=obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
     return result
 
@@ -210,6 +200,8 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
     obs_curvatures = obs_curvatures * 100
     obs_speed_curvature_str = [f"[{x[0]:.1f},{x[1]:.1f}]" for x in zip(obs_velocities_norm, obs_curvatures)]
     obs_speed_curvature_str = ", ".join(obs_speed_curvature_str)
+    with open(f"output.txt", 'a') as f:
+        f.write(f"Speed and Curvature Observed: {obs_speed_curvature_str}\n")
 
     
     print(f'Observed Speed and Curvature: {obs_speed_curvature_str}')
@@ -217,13 +209,6 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
     sys_message = ("You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n")
 
     if args.method == "openemma":
-        prompt = f"""These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. 
-        The scene is described as follows: {scene_description}. 
-        The identified critical objects are {object_description}. 
-        The car's intent is {intent_description}. 
-        The 5 second historical velocities and curvatures of the ego car are {obs_speed_curvature_str}. 
-        Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]. Write the raw text not markdown or latex. Future speeds and curvatures:"""
-    elif args.method == "deepseek":
         prompt = f"""These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. 
         The scene is described as follows: {scene_description}. 
         The identified critical objects are {object_description}. 
@@ -487,6 +472,10 @@ if __name__ == '__main__':
                     f.write(f"Object Description: {object_description}\n")
                     f.write(f"Intent Description: {updated_intent}\n")
                     f.write(f"Average Displacement Error: {ade}\n")
+                    f.write(f"Speed Curvature Predictions: {speed_curvature_pred}\n")
+
+                with open(f"output.txt", 'a') as f:
+                    f.write(f"Speed Curvature Predictions: {speed_curvature_pred}\n")
 
             # break  # Timestep
 
