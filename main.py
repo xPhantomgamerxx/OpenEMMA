@@ -142,8 +142,6 @@ def SceneDescription(obs_images, processor=None, model=None, tokenizer=None, arg
 
     if "llava" in args.model_path:
         prompt = f"""You are an autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Provide a concise description of the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings."""
-    print(f"len(images){len(obs_images)}")
-    print(f"{obs_images}")
     result = vlm_inference(text=prompt, images=obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
     return result
 
@@ -182,9 +180,9 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
         scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
         object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
         intent_description = DescribeOrUpdateIntent(obs_images, prev_intent=given_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        print(f'Scene Description: {scene_description} \n')
-        print(f'Object Description: {object_description} \n')
-        print(f'Intent Description: {intent_description} \n')
+        #print(f'Scene Description: {scene_description} \n')
+        #print(f'Object Description: {object_description} \n')
+        #print(f'Intent Description: {intent_description} \n')
     elif args.method == "deepseek":
         scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
         object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
@@ -200,11 +198,11 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
     obs_curvatures = obs_curvatures * 100
     obs_speed_curvature_str = [f"[{x[0]:.1f},{x[1]:.1f}]" for x in zip(obs_velocities_norm, obs_curvatures)]
     obs_speed_curvature_str = ", ".join(obs_speed_curvature_str)
-    with open(f"output.txt", 'a') as f:
-        f.write(f"Speed and Curvature Observed: {obs_speed_curvature_str}\n")
+    #with open(f"output.txt", 'a') as f:
+    #    f.write(f"Speed and Curvature Observed: {obs_speed_curvature_str}\n")
 
     
-    print(f'Observed Speed and Curvature: {obs_speed_curvature_str}')
+    #print(f'Observed Speed and Curvature: {obs_speed_curvature_str}')
 
     sys_message = ("You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n")
 
@@ -238,7 +236,7 @@ if __name__ == '__main__':
 
     total_memory = torch.cuda.get_device_properties(0).total_memory // (1024 ** 3)
     gpu_memory_limit = int(total_memory * 0.8)
-    print(f"Max memory Limit: {total_memory}")
+    #print(f"Max memory Limit: {total_memory}")
     max_memory = {0: f"{gpu_memory_limit}GiB"}
 
     
@@ -248,7 +246,7 @@ if __name__ == '__main__':
         processor = AutoProcessor.from_pretrained(model_id)
         tokenizer=None
     elif "qwen" in args.model_path:
-        model = Qwen2VLForConditionalGeneration.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto", max_memory={0: "17GiB"})
+        model = Qwen2VLForConditionalGeneration.from_pretrained("Qwen/Qwen2-VL-7B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
         processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
         tokenizer=None
     elif "llava" in args.model_path:
@@ -277,7 +275,7 @@ if __name__ == '__main__':
         nusc = NuScenes(version=args.version, dataroot=args.dataroot)
         # Iterate the scenes
         scenes = nusc.scene
-        scene_list = ["scene-0061"]#["scene-0103", "scene-1077"]
+        scene_list = ["scene-0061", "scene-0103", "scene-0553", "scene-0655"]#["scene-0103", "scene-1077"]
 
     elif "truck" in args.vehicle:
         nusc = TruckScenes( args.version, args.dataroot, True )
@@ -291,7 +289,7 @@ if __name__ == '__main__':
         name = scene['name']
         description = scene['description']
 
-        if not name in scene_list:
+        if name in scene_list:
             continue
 
         # Get all image and pose in this scene
@@ -299,6 +297,8 @@ if __name__ == '__main__':
         ego_poses = []
         camera_params = []
         curr_sample_token = first_sample_token
+        tmp = timestamp + '/' + name
+        os.makedirs(tmp, exist_ok = True)
         while True:
             sample = nusc.get('sample', curr_sample_token)
 
@@ -357,7 +357,7 @@ if __name__ == '__main__':
                     color='b')
             plt.plot(estimated_points[:, 0], estimated_points[:, 1], 'g-', label='Reconstruction')
             plt.legend()
-            plt.savefig(f"{timestamp}/{name}_interpolation.jpg")
+            plt.savefig(f"{timestamp}/{name}/interpolation.jpg")
             plt.close()
 
         # Get the waypoints of the ego vehicle.
@@ -393,7 +393,7 @@ if __name__ == '__main__':
             else:
                 with open(os.path.join(curr_image), "rb") as image_file:
                     img = cv2.imdecode(np.frombuffer(image_file.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
-                    img = yolo3d_nuScenes(img, calib=obs_camera_params[-1])[0]
+                    #img = yolo3d_nuScenes(img, calib=obs_camera_params[-1])[0]
             if "smth" in args.vehicle:
                 img = center_crop(img)
             for rho in range(3):
@@ -412,7 +412,7 @@ if __name__ == '__main__':
                 continue
             speed_curvature_pred = [[float(v), float(k)] for v, k in coordinates]
             speed_curvature_pred = speed_curvature_pred[:10]
-            print(f"Got {len(speed_curvature_pred)} future actions: {speed_curvature_pred}")
+            #print(f"Got {len(speed_curvature_pred)} future actions: {speed_curvature_pred}")
 
             # GT
             # OverlayTrajectory(img, fut_ego_traj_world, obs_camera_params[-1], obs_ego_poses[-1], color=(255, 0, 0))
@@ -429,6 +429,7 @@ if __name__ == '__main__':
                                                                          obs_ego_velocities[-1][0]), pred_len)
 
             # Overlay the trajectory.
+            # print(pred_traj)
             check_flag = OverlayTrajectory(img, pred_traj.tolist(), obs_camera_params[-1], obs_ego_poses[-1], color=(255, 0, 0), args=args)
             
 
@@ -451,31 +452,31 @@ if __name__ == '__main__':
             # Write to image.
             if args.plot == True:
                 cam_images_sequence.append(img.copy())
-                cv2.imwrite(f"{timestamp}/{name}_{i}_front_cam.jpg", img)
+                cv2.imwrite(f"{timestamp}/{name}/{i}_front_cam.jpg", img)
 
                 # Plot the trajectory.
                 plt.plot(fut_ego_traj_world[:, 0], fut_ego_traj_world[:, 1], 'r-', label='GT')
                 plt.plot(pred_traj[:, 0], pred_traj[:, 1], 'b-', label='Pred')
                 plt.legend()
                 plt.title(f"Scene: {name}, Frame: {i}, ADE: {ade}")
-                plt.savefig(f"{timestamp}/{name}_{i}_traj.jpg")
+                plt.savefig(f"{timestamp}/{name}/{i}_traj.jpg")
                 plt.close()
 
                 # Save the trajectory
-                np.save(f"{timestamp}/{name}_{i}_pred_traj.npy", pred_traj)
-                np.save(f"{timestamp}/{name}_{i}_pred_curvatures.npy", pred_curvatures)
-                np.save(f"{timestamp}/{name}_{i}_pred_speeds.npy", pred_speeds)
+                np.save(f"{timestamp}/{name}/{i}_pred_traj.npy", pred_traj)
+                np.save(f"{timestamp}/{name}/{i}_pred_curvatures.npy", pred_curvatures)
+                np.save(f"{timestamp}/{name}/{i}_pred_speeds.npy", pred_speeds)
 
                 # Save the descriptions
-                with open(f"{timestamp}/{name}_{i}_logs.txt", 'w') as f:
+                with open(f"{timestamp}/{name}/{i}_logs.txt", 'w') as f:
                     f.write(f"Scene Description: {scene_description}\n")
                     f.write(f"Object Description: {object_description}\n")
                     f.write(f"Intent Description: {updated_intent}\n")
                     f.write(f"Average Displacement Error: {ade}\n")
                     f.write(f"Speed Curvature Predictions: {speed_curvature_pred}\n")
 
-                with open(f"output.txt", 'a') as f:
-                    f.write(f"Speed Curvature Predictions: {speed_curvature_pred}\n")
+                #with open(f"output.txt", 'a') as f:
+                #    f.write(f"Speed Curvature Predictions: {speed_curvature_pred}\n")
 
             # break  # Timestep
 
@@ -493,7 +494,7 @@ if __name__ == '__main__':
             "avgade": aveg_ade
         }
 
-        with open(f"{timestamp}/ade_results.jsonl", "a") as f:
+        with open(f"{timestamp}/{name}/ade_results.jsonl", "a") as f:
             f.write(json.dumps(result))
             f.write("\n")
 

@@ -1,19 +1,21 @@
 from __future__ import annotations
 import os
 import cv2
+import re
 import argparse
 import numpy as np
 import torch
 import logging
 import matplotlib.pyplot as plt
 from math import atan2
+from datetime import datetime
 from nuscenes import NuScenes
 from truckscenes import TruckScenes
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoImageProcessor, AutoProcessor, pipeline, AutoModel
+from transformers import AutoModelForCausalLM, pipeline
 from openemma.YOLO3D.inference import yolo3d_nuScenes
 from Janus.janus.models import MultiModalityCausalLM, VLChatProcessor
 from Janus.janus.utils.io import load_pil_images
-from utils import EstimateCurvatureFromTrajectory, IntegrateCurvatureForPoints
+from utils import EstimateCurvatureFromTrajectory, IntegrateCurvatureForPoints, OverlayTrajectory, WriteImageSequenceToVideo
 
 logging.getLogger('transformers').setLevel(logging.ERROR)
 logging.getLogger('torchvisionc').setLevel(logging.ERROR)
@@ -50,7 +52,7 @@ def vlm_inference(
         pad_token_id=tokenizer.eos_token_id,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
-        max_new_tokens=512,
+        max_new_tokens=4096,
         do_sample=False,
         use_cache=True)
 
@@ -93,7 +95,7 @@ def call_vlm(
     elif task =="scene":
         prompt = [{
             "role": "User",
-            "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to these front-view camera images of a car taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Describe the driving scene according to traffic lights, movements of other cars or pedestrians and lane markings.",
+            "content": f"<image_placeholder>\n You are an autonomous driving labeller. You have access to this front-view camera image of a car. Imagine you are driving the car and describe the driving scene according to all aspects you think are important for driving safety. This could include traffic lights, movement of other cars or pedestrians, and lane markings. Do not describe the movement of the ego vehicle.",
             "images": img,
             },
             {"role": "Assistant", "content": ""},
@@ -101,7 +103,7 @@ def call_vlm(
     elif task == "object":
         prompt = [{
             "role": "User",
-            "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. What other road users should you pay attention to in the driving scene? List two or three of them, specifying its location within the image of the driving scene and provide a short description of the that road user on what it is doing, and why it is important to you.",
+            "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving car. Imagine you are the driver of the car. What other road users are you paying attention to in the driving scene? List two or three of them, specifying the location within the image of the driving scene and provide a short description of what that road user is currently doing, what they might do in the future, and why it is important to you. Dont try to describe the movement of the ego vehicle",
             "images": img,
             },
             {"role": "Assistant", "content": ""},
@@ -110,7 +112,7 @@ def call_vlm(
         if message == None:
             prompt = [{
                 "role": "User",
-                "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, describe the desired intent of the ego car. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
+                "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving vehicle. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians, describe the best course of action for the current car. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
                 "images": img,
                 },
                 {"role": "Assistant", "content": ""},
@@ -118,7 +120,7 @@ def call_vlm(
         else:
             prompt = [{
                 "role": "User",
-                "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to a front-view camera images of a vehicle taken at a 0.5 second interval over the past 5 seconds. Imagine you are driving the car. Half a second ago your intent was to {prev_intent}. Based on the updated lane markings and the updated movement of other cars and pedestrians, do you keep your intent or do you change it? Explain your current intent: ",
+                "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving vehicle. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians given as: {message}, describe the best course of action for the current car. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
                 "images": img,
                 },
                 {"role": "Assistant", "content": ""},
@@ -145,14 +147,14 @@ def call_llm(
 ) -> str:
     """Calls the LLM with the given prompt and returns the answer
     Args:
-        message (str): The prompt to pass to the LLM (DeepSeek-R1-Distill-Qwen-7B)
+        message (str): The prompt to pass to the LLM (DeepSeek-R1-Distill-Qwen)
         llm_pipe (pipeline): The pipeline object that contains the LLM
     Returns:
         answer (str): The LLM's response to the prompt
     """
     prompt = [{"role": "user", "content": f"{message}"}]
-    with open("prompt.txt", 'w') as f:
-        f.write(f"{prompt}")
+    # with open("prompt.txt", 'w') as f:
+    #    f.write(f"{prompt}")
     answer = llm_pipe(prompt)
     return answer
     
@@ -176,11 +178,14 @@ def GenerateMotion(
         str
     """
     scene_description = call_vlm(message=None, img=current_image, chat_processor=chat_processor, model=model, task="scene")
-    if verbose: print(f"Scene Description done: \n {scene_description}")
+    print("Scene Description done")
+    if verbose: print(f"{scene_description}")
     object_description = call_vlm(message=None, img=current_image, chat_processor=chat_processor, model=model, task="object")
-    if verbose: print(f"Object Description done: \n{object_description}")
-    intent_description = call_vlm(message=given_intent, img=current_image, chat_processor=chat_processor, model=model, task="intent")
-    if verbose: print(f"Intent Description done: \n{intent_description}")
+    print("Object Description done")
+    if verbose: print(f"{object_description}")
+    intent_description = call_vlm(message=object_description, img=current_image, chat_processor=chat_processor, model=model, task="intent")
+    print("Intent Description done")
+    if verbose: print(f"{intent_description}")
     
     past_waypoints_str = [f"[{x[0]:.2f},{x[1]:.2f}]" for x in past_waypoints]
     past_waypoints_str = ", ".join(past_waypoints_str)
@@ -189,17 +194,19 @@ def GenerateMotion(
     past_speed_curvature_str = [f"[{x[0]:.1f},{x[1]:.1f}]" for x in zip(past_velocities_norm, past_curvatures)]
     past_speed_curvature_str = ", ".join(past_speed_curvature_str)
     
-    message = f"""These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. 
+    message = f"""You are a driving expert driving a car in a real world scenario. 
     The scene is described as follows: {scene_description}. 
     The identified critical objects are {object_description}. 
-    The car's intent is {intent_description}. 
+    The current intent is {intent_description}. 
     The 5 second historical velocities and curvatures of the ego car are {past_speed_curvature_str}. 
-    Infer the association between these numbers and the image sequence. Generate the predicted future speeds and curvatures in the format [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] up to a maximum of 10. In the end provide a consice list of the output speeds and velocities in the same format as the historical velocities and curvatures in raw text, not markdown or latex. Future speeds and curvatures:"""
+    Output ONLY your predictions for the future speeds and curvatures of the vehicle in the style of [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] for the next 10 timesteps in the style of a python tuple. If the otuput doesn't meet the specifications it will be invalid, if there is ambiguity, assume the 5 seconds of historical velocities are correct"""
     if llm_pipe == None:
-        print(f"Message that will be passed to VLM: \n{message}")
+        print("Prompting VLM with full message")
+        if verbose: print(f"Message that will be passed to VLM: \n{message}")
         final = call_vlm(message=message, img=current_image, chat_processor=chat_processor, model=model, task="final")
     else:
-        print(f"Message that will be passed to LLM: \n{message}")
+        print("Prompting LLM with full message")
+        if verbose: print(f"Message that will be passed to LLM: \n{message}")
         final = call_llm(message=message, llm_pipe=llm_pipe)
 
     return final, scene_description, object_description, intent_description
@@ -207,35 +214,27 @@ def GenerateMotion(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="janus1")
+    parser.add_argument("--model", type=str, default="janus7")
     parser.add_argument("--dataroot", type=str, default="/home/ubuntu/project_ws/OpenEMMA/datasets/nuscenes/nuscenes")
     parser.add_argument("--version", type=str, default='v1.0-mini')
     parser.add_argument("--vehicle", type=str, default='car')
     parser.add_argument("--verbose", type=bool, default=False)
+    parser.add_argument("--plot", type=bool, default=True)
     args = parser.parse_args()
     if args.model == "janus1":
         model_path = "deepseek-ai/Janus-Pro-1B"
     elif args.model== "janus7":
         model_path = "deepseek-ai/Janus-Pro-7B"
-
-    # max_memory = {0:f"{(torch.cuda.get_device_properties('cuda:0').total_memory//(1024 ** 3)) * 0.8}GiB"}
     
     vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
     tokenizer = vl_chat_processor.tokenizer
-    vl_gpt: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
-    llm_pipe = pipeline("text-generation", model="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", device=0, max_new_tokens=2048)
-    if torch.cuda.is_available():
-        vl_gpt = vl_gpt.to(torch.bfloat16).cuda()
-    
-    # img_path = ["/home/ubuntu/project_ws/OpenEMMA/datasets/nuscenes/nuscenes/samples/CAM_FRONT/n015-2018-07-24-11-22-45+0800__CAM_FRONT__1532402932162460.jpg"], "/home/ubuntu/project_ws/OpenEMMA/datasets/nuscenes/nuscenes/sweeps/CAM_FRONT/n015-2018-07-24-11-22-45+0800__CAM_FRONT__1532402932612460.jpg"]
-    
-    # with open(os.path.join(img_path), "rb") as img_file:
-    #     img = cv2.imdecode(np.frombuffer(img_file.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
-    #     cv2.imwrite("testimg.jpg", img)
+    vl_gpt: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, device_map="auto", torch_dtype=torch.bfloat16)
 
+    llm_pipe = pipeline("text-generation", model="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", device_map="auto", max_new_tokens=4096)  
     nusc = NuScenes(version=args.version, dataroot=args.dataroot)
     scenes = nusc.scene
-    scene_list = ["scene-0061"]#["scene-0103", "scene-1077"]
+    scene_list = ["scene-0103"]#["scene-0061", "scene-0103", "scene-1077"]
+    timestamp = datetime.now().strftime("%m%d-%H%M")
 
     for scene in scenes:
         name = scene['name']
@@ -247,6 +246,7 @@ if __name__ == '__main__':
         first_sample_token = scene['first_sample_token']
         last_sample_token = scene['last_sample_token']
         description = scene['description']
+        os.makedirs(f"car_results/deepseek/{timestamp}/{name}", exist_ok = True)
 
         front_cam_images = []
         ego_poses = []
@@ -297,7 +297,6 @@ if __name__ == '__main__':
         ade3s_list = []
 
         for i in range(scene_length - TOTAL_LENGTH):
-
             past_images = front_cam_images[i:i+PAST_LENGTH]
             past_ego_poses = ego_poses[i:i+PAST_LENGTH]
             past_camera_params = camera_params[i:i+PAST_LENGTH]
@@ -309,26 +308,46 @@ if __name__ == '__main__':
             past_start_world = past_ego_traj_world[0]
             future_start_world = past_ego_traj_world[-1]
             current_image = past_images[-1]
+            with open(os.path.join(current_image), "rb") as image_file:
+                img = cv2.imdecode(np.frombuffer(image_file.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
             
             prediction, scene_description, object_description, intent_description = GenerateMotion(current_image=[current_image], past_waypoints=past_ego_traj_world, past_velocities=past_ego_velocities, past_curvatures=past_ego_curvatures, given_intent=prev_intent, chat_processor=vl_chat_processor, model=vl_gpt, llm_pipe=llm_pipe, verbose=args.verbose)
-            print(f"FINAL OUTPUT: \n{prediction}")
-            print(f"FINAL OUTPUT[-1]: \n{prediction[-1]}")
-            with open("test.txt", 'w') as f:
-                f.write(f"Final Output: {prediction}")
-            break
 
-    # answer = describe_scene(img_path=img_path, chat_processor=vl_chat_processor, model=vl_gpt).strip('\n')
+            with open(f"car_results/deepseek/{timestamp}/{name}/prediction_{i}.txt", 'w') as f:
+                f.write(f"{prediction}")
+            output = prediction[-1]['generated_text'][-1]['content']
+            keyword = '</think>'
+            pre, sep, post =  output.partition(keyword)
+            if sep: 
+                coordinates = re.findall(r"\[([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\]", post)
+                speed_curvature_pred = [[float(v), float(k)] for v, k in coordinates]
+                if len(speed_curvature_pred) > 10: speed_curvature_pred = speed_curvature_pred[:10]
+                print(f"Predictions for frame {i}/{scene_length - TOTAL_LENGTH}: {speed_curvature_pred}")
 
-    # conversation = [{
-    #     "role": "User",
-    #     "content": "<image_placeholder>\nYou are a autonomous driving labeller. Imagine you are driving the car. You need to detect all of the objects that are in the image thatyou need to take into account to drive safely through the scene. List two or three of them, specifying its location within the image of the driving scene and provide a short description of the that road user on what it is doing, and why it is important to you.",
-    #     "images": [img_path],
-    #     },
-    #     {"role": "Assistant", "content": ""},
-    # ]
-    
-    # answer, full_answer = vlm_inference(conversation, vl_chat_processor, vl_gpt)
-    # print(f"Object Detection: \n{answer}")
+            pred_len = min(FUTURE_LENGHT, len(speed_curvature_pred))
+            pred_curvatures = np.array(speed_curvature_pred)[:, 1] / 100
+            pred_speeds = np.array(speed_curvature_pred)[:, 0]
+            pred_traj = np.zeros((pred_len, 3))
+            pred_traj[:pred_len, :2] = IntegrateCurvatureForPoints(pred_curvatures,pred_speeds,future_start_world,atan2(past_ego_velocities[-1][1],past_ego_velocities[-1][0]), pred_len)
 
+            check_flag = OverlayTrajectory(img, pred_traj.tolist(), past_camera_params[-1], past_ego_poses[-1], color=(255, 0, 0), args=args)
+            cam_images_sequence.append(img.copy())
+            cv2.imwrite(f"car_results/deepseek/{timestamp}/{name}/img_{i}.jpg", img)
 
-    # print(answer)
+            # Compute ADE.
+            future_ego_traj_world = np.array(future_ego_traj_world)
+            ade = np.mean(np.linalg.norm(future_ego_traj_world[:pred_len] - pred_traj, axis=1))
+            
+            pred1_len = min(pred_len, 2)
+            ade1s = np.mean(np.linalg.norm(future_ego_traj_world[:pred1_len] - pred_traj[1:pred1_len+1] , axis=1))
+            ade1s_list.append(ade1s)
+
+            pred2_len = min(pred_len, 4)
+            ade2s = np.mean(np.linalg.norm(future_ego_traj_world[:pred2_len] - pred_traj[:pred2_len] , axis=1))
+            ade2s_list.append(ade2s)
+
+            pred3_len = min(pred_len, 6)
+            ade3s = np.mean(np.linalg.norm(future_ego_traj_world[:pred3_len] - pred_traj[:pred3_len] , axis=1))
+            ade3s_list.append(ade3s)
+        
+        WriteImageSequenceToVideo(cam_images_sequence, f"car_results/deepseek/{timestamp}/{name}/{name}")
