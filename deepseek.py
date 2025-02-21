@@ -1,12 +1,16 @@
 from __future__ import annotations
+
 import os
 import cv2
 import re
 import argparse
-import numpy as np
 import torch
 import logging
+import json
+import pytz
+import numpy as np
 import matplotlib.pyplot as plt
+
 from math import atan2
 from datetime import datetime
 from nuscenes import NuScenes
@@ -26,7 +30,7 @@ def vlm_inference(
     chat_processor: VLChatProcessor = None, 
     model: MultiModalityCausalLM = None,
     verbose: bool = False
-) -> tuple[str, str]:
+) -> str:
     """ Runs inference on the provided model and returns the response from the VLM
 
     Args:
@@ -36,16 +40,13 @@ def vlm_inference(
         verbose (bool): Enables print statements
 
     Returns:
-        answer (tuple[str,str]): The answer of the VLM along with the full answer including the input
+        answer (str): The answer of the VLM 
     """
 
     pil_images = load_pil_images(message)
     prepare_inputs = chat_processor(conversations=message, images=pil_images, force_batchify=True).to(vl_gpt.device)
     
-    # run image encoder to get the image embeddings
     inputs_embeds = model.prepare_inputs_embeds(**prepare_inputs)
-
-    # run the model to get the response
     outputs = model.language_model.generate(
         inputs_embeds=inputs_embeds,
         attention_mask=prepare_inputs.attention_mask,
@@ -57,11 +58,11 @@ def vlm_inference(
         use_cache=True)
 
     answer = tokenizer.decode(outputs[0].cpu().tolist(), skip_special_tokens=True).replace("\n\n", " ")
-    full_answer = (f"{prepare_inputs['sft_format'][0]}", answer)
     if verbose:
+        full_answer = (f"{prepare_inputs['sft_format'][0]}", answer)
         print("answer: \n", answer)
         print("full_answer \n", full_answer)
-    return (answer, full_answer)
+    return answer
 
 def call_vlm(
     message: list[dict] = None,
@@ -93,21 +94,29 @@ def call_vlm(
             {"role": "Assistant", "content": ""},
         ]
     elif task =="scene":
-        prompt = [{
-            "role": "User",
-            "content": f"<image_placeholder>\n You are an autonomous driving labeller. You have access to this front-view camera image of a car. Imagine you are driving the car and describe the driving scene according to all aspects you think are important for driving safety. This could include traffic lights, movement of other cars or pedestrians, and lane markings. Do not describe the movement of the ego vehicle.",
-            "images": img,
-            },
-            {"role": "Assistant", "content": ""},
-        ]
+        prompt = [
+            {"role": "User",
+            "content": f"<image_placeholder>\n You are an autonomous driving labeller. You have access to this front-view camera image of a car. Imagine you are driving the car and describe the driving scene according to all aspects you think are important for driving safety. This could include traffic lights, movement of other cars or pedestrians, and lane markings. Give your reason as to why all of these objects are important to driving safely, but do not try to describe the movement of the ego vehicle.",
+            "images": img},
+            # {"role": "System_Message",
+            # "content": """You are an AI assistant that must only follow a predefined output format. Strictly adhere to this format for all responses:
+            # 1. Object1
+            # 2. Object2
+            # 3. ...
+            # """},
+            {"role": "Assistant", "content": ""}]
     elif task == "object":
-        prompt = [{
-            "role": "User",
-            "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving car. Imagine you are the driver of the car. What other road users are you paying attention to in the driving scene? List two or three of them, specifying the location within the image of the driving scene and provide a short description of what that road user is currently doing, what they might do in the future, and why it is important to you. Dont try to describe the movement of the ego vehicle",
-            "images": img,
-            },
-            {"role": "Assistant", "content": ""},
-        ] 
+        prompt = [
+            {"role": "User",
+            "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving car. Imagine you are the driver of the car. What other road users are you paying attention to in the driving scene? List as many as you think are important, specifying the location within the image of the driving scene and provide a short description of what that road user is currently doing, what they might do in the future, and why it is important to you. Dont try to describe the movement of the ego vehicle",
+            "images": img},
+            # {"role": "System_Message",
+            # "content": """You are an AI assistant that must only follow a predefined output format. Strictly adhere to this format for all responses:
+            # 1. Object1
+            # 2. Object2
+            # 3. ...
+            # """},
+            {"role": "Assistant", "content": ""}] 
     elif task == "intent":
         if message == None:
             prompt = [{
@@ -120,24 +129,21 @@ def call_vlm(
         else:
             prompt = [{
                 "role": "User",
-                "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving vehicle. Imagine you are driving the car. Based on the lane markings and the movement of other cars and pedestrians given as: {message}, describe the best course of action for the current car. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
+                "content": f"<image_placeholder>\n You are a autonomous driving labeller. You have access to this front-view camera image taken from a driving vehicle. Imagine you are driving the car. The critical objects in the image have been described as: {message} Based on the image you see and the description of the critical objects, give a high level course of action that the ego vehicle should follow. Is it going to follow the lane to turn left, turn right, or go straight? Should it maintain the current speed or slow down or speed up?",
                 "images": img,
                 },
                 {"role": "Assistant", "content": ""},
             ]
     elif task == "final":
-        prompt = [{
-            "role": "User", 
+        prompt = [
+            {"role": "User", 
             "content": f"<image_placeholder>\n {message}",
-            "images": img,
-            },
-            {"role": "Assistant", "content": ""},
-        ]
+            "images": img},
+            {"role": "Assistant", "content": ""}]
 
-    answer, full_answer = vlm_inference(prompt, chat_processor, model)
+    answer = vlm_inference(prompt, chat_processor, model)
     if verbose: 
         print("answer: \n", answer)
-        print("full_answer \n", full_answer)
     return answer
 
 
@@ -152,7 +158,11 @@ def call_llm(
     Returns:
         answer (str): The LLM's response to the prompt
     """
-    prompt = [{"role": "user", "content": f"{message}"}]
+    prompt = [{"role": "user", 
+               "content": f"{message}"}]
+    
+    # prompt =  f"""[System] You are an AI assistant that must strictly follow a predefined output format. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured. \nStrictly adhere to this format in all responses: [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] \n[User]: {message}\n\n[Assistant]
+    # """
     # with open("prompt.txt", 'w') as f:
     #    f.write(f"{prompt}")
     answer = llm_pipe(prompt)
@@ -163,7 +173,7 @@ def GenerateMotion(
     past_waypoints = None, 
     past_velocities = None, 
     past_curvatures = None, 
-    given_intent = None, 
+    past_intent = None, 
     chat_processor: VLChatProcessor = None,
     model: MultiModalityCausalLM = None,
     llm_pipe: pipeline = None,
@@ -178,13 +188,13 @@ def GenerateMotion(
         str
     """
     scene_description = call_vlm(message=None, img=current_image, chat_processor=chat_processor, model=model, task="scene")
-    print("Scene Description done")
+    #print("Scene Description done")
     if verbose: print(f"{scene_description}")
     object_description = call_vlm(message=None, img=current_image, chat_processor=chat_processor, model=model, task="object")
-    print("Object Description done")
+    #print("Object Description done")
     if verbose: print(f"{object_description}")
     intent_description = call_vlm(message=object_description, img=current_image, chat_processor=chat_processor, model=model, task="intent")
-    print("Intent Description done")
+    #print("Intent Description done")
     if verbose: print(f"{intent_description}")
     
     past_waypoints_str = [f"[{x[0]:.2f},{x[1]:.2f}]" for x in past_waypoints]
@@ -194,18 +204,27 @@ def GenerateMotion(
     past_speed_curvature_str = [f"[{x[0]:.1f},{x[1]:.1f}]" for x in zip(past_velocities_norm, past_curvatures)]
     past_speed_curvature_str = ", ".join(past_speed_curvature_str)
     
-    message = f"""You are a driving expert driving a car in a real world scenario. 
-    The scene is described as follows: {scene_description}. 
-    The identified critical objects are {object_description}. 
-    The current intent is {intent_description}. 
-    The 5 second historical velocities and curvatures of the ego car are {past_speed_curvature_str}. 
-    Output ONLY your predictions for the future speeds and curvatures of the vehicle in the style of [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] for the next 10 timesteps in the style of a python tuple. If the otuput doesn't meet the specifications it will be invalid, if there is ambiguity, assume the 5 seconds of historical velocities are correct"""
+    if not past_intent == []:
+        message = f"You are a driving expert driving a car in a real world scenario. \
+        The scene is described as follows: {scene_description}. \
+        The identified critical objects are {object_description}. \
+        The current intent is {intent_description}. \
+        The historical velocities and curvatures of the ego car of the last 5 second are up until the present are: {past_speed_curvature_str}. \
+        For the previous frame, a this prediction was given for the best motion: {past_intent} \
+        Reason about the scene fully, then output your predictions for the future speeds and curvatures of the vehicle in the style of [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] for the next 10 timesteps in the style of a python tuple. If the otuput doesn't meet the specifications it will be invalid, if there is ambiguity, assume the 5 seconds of historical velocities are correct. The predicted speed and curvature should continue from where the past values left off"
+    else: 
+        message = f"You are a driving expert driving a car in a real world scenario. \
+        The scene is described as follows: {scene_description}. \
+        The identified critical objects are {object_description}. \
+        The current intent is {intent_description}. \
+        The historical velocities and curvatures of the ego car of the last 5 second are up until the present are: {past_speed_curvature_str}. \
+        Reason about the scene fully, then output your predictions for the future speeds and curvatures of the vehicle in the style of [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] for the next 10 timesteps in the style of a python tuple. If the otuput doesn't meet the specifications it will be invalid, if there is ambiguity, assume the 5 seconds of historical velocities are correct. The predicted speed and curvature should continue from where the past values left off"
     if llm_pipe == None:
-        print("Prompting VLM with full message")
+        # print("Prompting VLM with full message")
         if verbose: print(f"Message that will be passed to VLM: \n{message}")
         final = call_vlm(message=message, img=current_image, chat_processor=chat_processor, model=model, task="final")
     else:
-        print("Prompting LLM with full message")
+        # print("Prompting LLM with full message")
         if verbose: print(f"Message that will be passed to LLM: \n{message}")
         final = call_llm(message=message, llm_pipe=llm_pipe)
 
@@ -214,27 +233,34 @@ def GenerateMotion(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="janus7")
+    parser.add_argument("--janus_model", type=str, default="janus7")
+    parser.add_argument("--model", type=str, default="7B")
     parser.add_argument("--dataroot", type=str, default="/home/ubuntu/project_ws/OpenEMMA/datasets/nuscenes/nuscenes")
     parser.add_argument("--version", type=str, default='v1.0-mini')
     parser.add_argument("--vehicle", type=str, default='car')
     parser.add_argument("--verbose", type=bool, default=False)
     parser.add_argument("--plot", type=bool, default=True)
     args = parser.parse_args()
-    if args.model == "janus1":
+    if args.janus_model == "janus1":
         model_path = "deepseek-ai/Janus-Pro-1B"
-    elif args.model== "janus7":
+    elif args.janus_model== "janus7":
         model_path = "deepseek-ai/Janus-Pro-7B"
+    
+    if args.model == "1.5B":
+        deepseek_model = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+    elif args.model =="7B":
+        deepseek_model = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
     
     vl_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
     tokenizer = vl_chat_processor.tokenizer
     vl_gpt: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, device_map="auto", torch_dtype=torch.bfloat16)
 
-    llm_pipe = pipeline("text-generation", model="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", device_map="auto", max_new_tokens=4096)  
+    llm_pipe = pipeline("text-generation", model=deepseek_model, device_map="auto", max_new_tokens=2048)  
     nusc = NuScenes(version=args.version, dataroot=args.dataroot)
     scenes = nusc.scene
-    scene_list = ["scene-0103"]#["scene-0061", "scene-0103", "scene-1077"]
-    timestamp = datetime.now().strftime("%m%d-%H%M")
+    scene_list = ["scene-0061"]#["scene-0061", "scene-0103", "scene-1077"]
+    local_tz = pytz.timezone("Europe/Stockholm")
+    timestamp = datetime.now(local_tz).strftime("%m%d-%H%M")
 
     for scene in scenes:
         name = scene['name']
@@ -246,7 +272,8 @@ if __name__ == '__main__':
         first_sample_token = scene['first_sample_token']
         last_sample_token = scene['last_sample_token']
         description = scene['description']
-        os.makedirs(f"car_results/deepseek/{timestamp}/{name}", exist_ok = True)
+        path = f"car_results/deepseek/{name}/{timestamp}"
+        os.makedirs(f"{path}", exist_ok = True)
 
         front_cam_images = []
         ego_poses = []
@@ -290,7 +317,7 @@ if __name__ == '__main__':
         FUTURE_LENGHT = 10
         TOTAL_LENGTH = PAST_LENGTH + FUTURE_LENGHT
 
-        prev_intent = None
+        prev_intent = []
         cam_images_sequence = []
         ade1s_list = []
         ade2s_list = []
@@ -311,19 +338,28 @@ if __name__ == '__main__':
             with open(os.path.join(current_image), "rb") as image_file:
                 img = cv2.imdecode(np.frombuffer(image_file.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
             
-            prediction, scene_description, object_description, intent_description = GenerateMotion(current_image=[current_image], past_waypoints=past_ego_traj_world, past_velocities=past_ego_velocities, past_curvatures=past_ego_curvatures, given_intent=prev_intent, chat_processor=vl_chat_processor, model=vl_gpt, llm_pipe=llm_pipe, verbose=args.verbose)
-
-            with open(f"car_results/deepseek/{timestamp}/{name}/prediction_{i}.txt", 'w') as f:
+            while True:
+                prediction, scene_description, object_description, intent_description = GenerateMotion(current_image=[current_image], past_waypoints=past_ego_traj_world, past_velocities=past_ego_velocities, past_curvatures=past_ego_curvatures, past_intent=prev_intent, chat_processor=vl_chat_processor, model=vl_gpt, llm_pipe=llm_pipe, verbose=args.verbose)
+                # print(prediction)
+                output = prediction[-1]['generated_text'][-1]['content']
+                keyword = '</think>'
+                pre, sep, post =  output.partition(keyword)
+                if sep: 
+                    coordinates = re.findall(r"\[([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\]", post)
+                    if len(coordinates) == 0:
+                        coordinates = re.findall(r"\(([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\)", post)
+                    speed_curvature_pred = [[float(v), float(k)] for v, k in coordinates]
+                if not speed_curvature_pred == []:
+                    break
+            if speed_curvature_pred == []:
+                continue
+            
+            if len(speed_curvature_pred) > 10: speed_curvature_pred = speed_curvature_pred[:10]
+            print(f"Predictions for frame {i+1}/{scene_length - TOTAL_LENGTH}: {speed_curvature_pred}")
+            prev_intent = speed_curvature_pred
+            with open(f"{path}/prediction_{i}.txt", 'w') as f:
                 f.write(f"{prediction}")
-            output = prediction[-1]['generated_text'][-1]['content']
-            keyword = '</think>'
-            pre, sep, post =  output.partition(keyword)
-            if sep: 
-                coordinates = re.findall(r"\[([-+]?\d*\.?\d+),\s*([-+]?\d*\.?\d+)\]", post)
-                speed_curvature_pred = [[float(v), float(k)] for v, k in coordinates]
-                if len(speed_curvature_pred) > 10: speed_curvature_pred = speed_curvature_pred[:10]
-                print(f"Predictions for frame {i}/{scene_length - TOTAL_LENGTH}: {speed_curvature_pred}")
-
+            
             pred_len = min(FUTURE_LENGHT, len(speed_curvature_pred))
             pred_curvatures = np.array(speed_curvature_pred)[:, 1] / 100
             pred_speeds = np.array(speed_curvature_pred)[:, 0]
@@ -332,8 +368,8 @@ if __name__ == '__main__':
 
             check_flag = OverlayTrajectory(img, pred_traj.tolist(), past_camera_params[-1], past_ego_poses[-1], color=(255, 0, 0), args=args)
             cam_images_sequence.append(img.copy())
-            cv2.imwrite(f"car_results/deepseek/{timestamp}/{name}/img_{i}.jpg", img)
-
+            # cv2.imwrite(f"testtimgg.jpg", img)
+            
             # Compute ADE.
             future_ego_traj_world = np.array(future_ego_traj_world)
             ade = np.mean(np.linalg.norm(future_ego_traj_world[:pred_len] - pred_traj, axis=1))
@@ -349,5 +385,27 @@ if __name__ == '__main__':
             pred3_len = min(pred_len, 6)
             ade3s = np.mean(np.linalg.norm(future_ego_traj_world[:pred3_len] - pred_traj[:pred3_len] , axis=1))
             ade3s_list.append(ade3s)
+
+            cv2.imwrite(f"{path}/img_{i}.jpg", img)
+            with open(f"{path}/prediction_{i}.txt", 'a') as f:
+                f.write(f"\nAverage Displacement Error: {ade}")
         
-        WriteImageSequenceToVideo(cam_images_sequence, f"car_results/deepseek/{timestamp}/{name}/{name}")
+        mean_ade1s = np.mean(ade1s_list)
+        mean_ade2s = np.mean(ade2s_list)
+        mean_ade3s = np.mean(ade3s_list)
+        aveg_ade = np.mean([mean_ade1s, mean_ade2s, mean_ade3s])
+
+        result = {
+            "name": name,
+            "token": token,
+            "timestamp": timestamp,
+            "ade1s": mean_ade1s,
+            "ade2s": mean_ade2s,
+            "ade3s": mean_ade3s,
+            "avgade": aveg_ade
+        }
+
+        with open(f"car_results/deepseek/ade_results.jsonl", "a") as f:
+            f.write(json.dumps(result))
+            f.write("\n")
+        WriteImageSequenceToVideo(cam_images_sequence, f"{path}/{name}")

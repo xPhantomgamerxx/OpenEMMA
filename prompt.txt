@@ -1,3 +1,28 @@
-[
-    {'role': 'user', 
-    'content': "These are frames from a video taken by a camera mounted in the front of a car. The images are taken at a 0.5 second interval. \n    The scene is described as follows: Based on the front-view camera images, here's a description of the driving scene: The car is positioned in the middle of a multi-lane road, with a visible traffic light showing a green signal. The traffic light is green, indicating that the car is allowed to proceed forward. The road is divided by lane markings, with a straight lane in the center and a left-turn lane to the left of the car. There are other vehicles visible in the image, including a white car to the left of the car, a black car to the right, and a construction vehicle in the background. There are also pedestrians visible on the sidewalk to the right of the car, crossing the road. The surrounding environment includes trees and buildings, indicating an urban setting. The car is driving smoothly, following the lane markings and the traffic light. There are no immediate obstacles or hazards in the immediate vicinity, and the overall scene appears to be calm and orderly.. \n    The identified critical objects are  In the driving scene, you should pay attention to the two-wheeled vehicle in the center of the image, which is a bicycle. It is located in the middle of the road, and it is likely moving towards the camera. This road user is important because it poses a potential hazard to the autonomous driving system, as bicycles are not designed to handle the same level of traffic as cars and motorcycles. It is crucial to be aware of such road users to ensure safety for all road users.. \n    The car's intent is Based on the lane markings and the movement of other cars and pedestrians, the ego car appears to be in a position to make a left turn. The lane markings indicate a left-turn lane, and the car is positioned in a way that suggests it is preparing to make a left turn. The current speed of the ego car should be adjusted to match the speed of the traffic around it, ensuring safe and smooth navigation through the turn.. \n    The 5 second historical velocities and curvatures of the ego car are [4.5,0.2], [4.5,0.2], [4.8,0.2], [4.2,0.2], [4.1,0.0], [3.5,0.3], [3.8,0.1], [4.0,0.3], [3.5,0.1], [3.4,0.4]. \n  Output only your predictions for the future speeds and curvatures of the vehicle in the style of [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] for the next 10 timesteps in the style of a python tuple."}]
+[System] You are an AI assistant that must strictly follow a predefined output format. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured. 
+Strictly adhere to this format in all responses: [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10]
+[User]
+You are a driving expert driving a car in a real world scenario. The scene has been described by a VLM as follows:  
+1. The road is divided into two lanes, with the ego vehicle occupying the left lane.
+2. There are orange traffic cones placed along the right lane, possibly indicating a lane closure or construction.
+3. The left lane has a double yellow line marking the center, indicating no passing is allowed.
+4. The right lane has a single yellow line marking the center, indicating it is a single lane.
+5. There are trees and greenery on the left side of the road, providing a natural barrier.
+6. On the right side, there is a large building with a modern design, possibly an office or commercial space.
+7. The road appears to be in an urban area, with other vehicles and pedestrians potentially present but not visible in this image.
+8. The sky is clear, suggesting good weather conditions for driving.. 
+The critical objects have been described by a VLM as follows:  1. Tree
+2. Building
+3. Traffic cone
+4. Cyclist
+5. Other cars
+6. Pedestrians
+7. Traffic sign
+8. Road markings
+9. Road divider
+10. Other vehicles. 
+The current intent has been described by a VLM as follows:  Based on the image provided, the car is currently in a lane with lane markings that indicate a left turn. The road markings are clear and visible, and there are traffic cones placed along the road, which might be used to guide the direction of traffic. The car is also positioned behind a cyclist and other vehicles, suggesting that it should maintain its current speed and follow the lane markings to turn left.. 
+The 5 second historical velocities and curvatures of the ego car are [2.3,4.7], [2.1,4.9], [2.1,4.9], [2.2,5.2], [1.9,4.9], [2.1,4.4], [2.2,4.2], [1.9,3.8], [2.0,3.2], [1.5,2.7]. 
+Analyze these descriptions and use them to predict the future speeds and curvature of the vehicle.
+
+[Assistant]
+    
