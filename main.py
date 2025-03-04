@@ -44,11 +44,9 @@ def getMessage(prompt, image=None, args=None):
              }
         ]
     elif "qwen" in args.model_path:
-        message = [
-            {"role": "user",
-             "content": [{"type": "image", "image": image},{"type": "text", "text": prompt}]
-             }
-        ]
+        message = [{"role": "user",
+                        "content": [{"type": "image", "image": image},{"type": "text", "text": prompt}]}]
+        
     elif "deepseek" in args.model_path:
         message = [
             {"role": "user",
@@ -71,7 +69,18 @@ def vlm_inference(text=None, images=None, sys_message=None, processor=None, mode
             return output_text
         
         elif "qwen" in args.model_path:
-            with torch.no_grad():
+            if args.blind: 
+                print("!!!BLIND!!!")
+                images = '/home/ubuntu/project_ws/OpenEMMA/black_image.png'
+                message = getMessage(text, image=images, args=args)
+                text = processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+                image_inputs, video_inputs = process_vision_info(message)
+                inputs = processor(text=[text],images=image_inputs,videos=video_inputs,padding=True,return_tensors="pt",).to(model.device)
+                generated_ids = model.generate(**inputs, max_new_tokens=128)
+                generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+                output_text = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                return output_text[0]
+            else: 
                 message = getMessage(text, image=images, args=args)
                 text = processor.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
                 image_inputs, video_inputs = process_vision_info(message)
@@ -176,20 +185,13 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
 
     scene_description, object_description, intent_description = None, None, None
 
-    if args.method == "openemma":
-        scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        intent_description = DescribeOrUpdateIntent(obs_images, prev_intent=given_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        #print(f'Scene Description: {scene_description} \n')
-        #print(f'Object Description: {object_description} \n')
-        #print(f'Intent Description: {intent_description} \n')
-    elif args.method == "deepseek":
-        scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        intent_description = DescribeOrUpdateIntent(obs_images, prev_intent=given_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
-        print(f'Scene Description: {scene_description} \n')
-        print(f'Object Description: {object_description} \n')
-        print(f'Intent Description: {intent_description} \n')
+    scene_description = SceneDescription(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
+    # print(f'Scene Description: ')#{scene_description} \n')
+    object_description = DescribeObjects(obs_images, processor=processor, model=model, tokenizer=tokenizer, args=args)
+    # print(f'Object Description: ')#{object_description} \n')
+    intent_description = DescribeOrUpdateIntent(obs_images, prev_intent=given_intent, processor=processor, model=model, tokenizer=tokenizer, args=args)
+    # print(f'Intent Description: ')#{intent_description} \n')
+
 
     # Convert array waypoints to string.
     obs_waypoints_str = [f"[{x[0]:.2f},{x[1]:.2f}]" for x in obs_waypoints]
@@ -202,7 +204,7 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
     #    f.write(f"Speed and Curvature Observed: {obs_speed_curvature_str}\n")
 
     
-    #print(f'Observed Speed and Curvature: {obs_speed_curvature_str}')
+    print(f'Observed Speed and Curvature: {obs_speed_curvature_str}')
 
     sys_message = ("You are a autonomous driving labeller. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured.\n")
 
@@ -225,14 +227,16 @@ def GenerateMotion(obs_images, obs_waypoints, obs_velocities, obs_curvatures, gi
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="gpt")
+    parser.add_argument("--model-path", type=str, default="qwen")
     parser.add_argument("--plot", type=bool, default=True)
-    parser.add_argument("--dataroot", type=str, default='datasets/NuScenes')
+    parser.add_argument("--dataroot", type=str, default='/home/ubuntu/project_ws/OpenEMMA/datasets/nuscenes/nuscenes')
     parser.add_argument("--version", type=str, default='v1.0-mini')
     parser.add_argument("--method", type=str, default='openemma')
     parser.add_argument("--vehicle", type=str, default='car')
+    parser.add_argument("--blind", type=bool, default=False )
     args = parser.parse_args()
 
+    print(args.blind)
 
     total_memory = torch.cuda.get_device_properties(0).total_memory // (1024 ** 3)
     gpu_memory_limit = int(total_memory * 0.8)
@@ -262,20 +266,20 @@ if __name__ == '__main__':
         processor = None
         tokenizer=None
 
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now().strftime("%m%d-%H%M")
     #timestamp = args.model_path + f"_results/{args.method}/" + timestamp
     if "car" in args.vehicle:
-        timestamp = f"car_results/{args.model_path}/" + args.method + "/" + timestamp
+        path = f"car_results/{args.model_path}/" 
     elif "truck" in args.vehicle:
         timestamp = f"truck_results/{args.model_path}/" + args.method + "/" + timestamp
-    os.makedirs(timestamp, exist_ok=True)
+    
 
     # Load the dataset
     if "car" in args.vehicle:
         nusc = NuScenes(version=args.version, dataroot=args.dataroot)
         # Iterate the scenes
         scenes = nusc.scene
-        scene_list = ["scene-0061", "scene-0103", "scene-0553", "scene-0655"]#["scene-0103", "scene-1077"]
+        scene_list = ["scene-0061"]
 
     elif "truck" in args.vehicle:
         nusc = TruckScenes( args.version, args.dataroot, True )
@@ -288,8 +292,9 @@ if __name__ == '__main__':
         last_sample_token = scene['last_sample_token']
         name = scene['name']
         description = scene['description']
+        print(name)
 
-        if name in scene_list:
+        if not name in scene_list:
             continue
 
         # Get all image and pose in this scene
@@ -297,8 +302,8 @@ if __name__ == '__main__':
         ego_poses = []
         camera_params = []
         curr_sample_token = first_sample_token
-        tmp = timestamp + '/' + name
-        os.makedirs(tmp, exist_ok = True)
+        new_path = path + '/' + name + '/' + timestamp
+        os.makedirs(new_path, exist_ok = True)
         while True:
             sample = nusc.get('sample', curr_sample_token)
 
@@ -357,7 +362,7 @@ if __name__ == '__main__':
                     color='b')
             plt.plot(estimated_points[:, 0], estimated_points[:, 1], 'g-', label='Reconstruction')
             plt.legend()
-            plt.savefig(f"{timestamp}/{name}/interpolation.jpg")
+            plt.savefig(f"{new_path}/interpolation.jpg")
             plt.close()
 
         # Get the waypoints of the ego vehicle.
@@ -394,8 +399,6 @@ if __name__ == '__main__':
                 with open(os.path.join(curr_image), "rb") as image_file:
                     img = cv2.imdecode(np.frombuffer(image_file.read(), dtype=np.uint8), cv2.IMREAD_COLOR)
                     #img = yolo3d_nuScenes(img, calib=obs_camera_params[-1])[0]
-            if "smth" in args.vehicle:
-                img = center_crop(img)
             for rho in range(3):
                 # Assemble the prompt.
                 if not "gpt" in args.model_path:
@@ -409,9 +412,12 @@ if __name__ == '__main__':
                 if not coordinates == []:
                     break
             if coordinates == []:
+                print("Coords Empty")
                 continue
-            speed_curvature_pred = [[float(v), float(k)] for v, k in coordinates]
+            speed_curvature_pred = [[float(v),float(k)] for v, k in coordinates]
             speed_curvature_pred = speed_curvature_pred[:10]
+            print(f"Predictions for frame {i+1}/{scene_length - TTL_LEN}: {speed_curvature_pred}")
+
             #print(f"Got {len(speed_curvature_pred)} future actions: {speed_curvature_pred}")
 
             # GT
@@ -452,23 +458,23 @@ if __name__ == '__main__':
             # Write to image.
             if args.plot == True:
                 cam_images_sequence.append(img.copy())
-                cv2.imwrite(f"{timestamp}/{name}/{i}_front_cam.jpg", img)
+                cv2.imwrite(f"{new_path}/{i}_front_cam.jpg", img)
 
                 # Plot the trajectory.
                 plt.plot(fut_ego_traj_world[:, 0], fut_ego_traj_world[:, 1], 'r-', label='GT')
                 plt.plot(pred_traj[:, 0], pred_traj[:, 1], 'b-', label='Pred')
                 plt.legend()
                 plt.title(f"Scene: {name}, Frame: {i}, ADE: {ade}")
-                plt.savefig(f"{timestamp}/{name}/{i}_traj.jpg")
+                plt.savefig(f"{new_path}/{i}_traj.jpg")
                 plt.close()
 
                 # Save the trajectory
-                np.save(f"{timestamp}/{name}/{i}_pred_traj.npy", pred_traj)
-                np.save(f"{timestamp}/{name}/{i}_pred_curvatures.npy", pred_curvatures)
-                np.save(f"{timestamp}/{name}/{i}_pred_speeds.npy", pred_speeds)
+                np.save(f"{new_path}/{i}_pred_traj.npy", pred_traj)
+                np.save(f"{new_path}/{i}_pred_curvatures.npy", pred_curvatures)
+                np.save(f"{new_path}/{i}_pred_speeds.npy", pred_speeds)
 
                 # Save the descriptions
-                with open(f"{timestamp}/{name}/{i}_logs.txt", 'w') as f:
+                with open(f"{new_path}/{i}_logs.txt", 'w') as f:
                     f.write(f"Scene Description: {scene_description}\n")
                     f.write(f"Object Description: {object_description}\n")
                     f.write(f"Intent Description: {updated_intent}\n")
