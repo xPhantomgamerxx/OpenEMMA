@@ -4,6 +4,7 @@ import re
 import argparse
 from datetime import datetime
 from math import atan2
+import time
 
 import cv2
 import numpy as np
@@ -236,7 +237,6 @@ if __name__ == '__main__':
     parser.add_argument("--blind", type=bool, default=False )
     args = parser.parse_args()
 
-    print(args.blind)
 
     total_memory = torch.cuda.get_device_properties(0).total_memory // (1024 ** 3)
     gpu_memory_limit = int(total_memory * 0.8)
@@ -287,6 +287,7 @@ if __name__ == '__main__':
         scene_list=["scene-0044384af3d8494e913fb8b14915239e-3"]
 
     for scene in scenes:
+        tic = time.time()
         token = scene['token']
         first_sample_token = scene['first_sample_token']
         last_sample_token = scene['last_sample_token']
@@ -499,8 +500,9 @@ if __name__ == '__main__':
             "ade3s": mean_ade3s,
             "avgade": aveg_ade
         }
-
-        with open(f"{timestamp}/{name}/ade_results.jsonl", "a") as f:
+        toc = time.time()
+        print(f"Scene took {(toc - tic)} seconds")
+        with open(f"{new_path}/ade_results.jsonl", "a") as f:
             f.write(json.dumps(result))
             f.write("\n")
 

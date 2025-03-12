@@ -53,7 +53,7 @@ def vlm_inference(
         pad_token_id=tokenizer.eos_token_id,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
-        max_new_tokens=4096,
+        max_new_tokens=1024,
         do_sample=False,
         use_cache=True)
 
@@ -98,24 +98,12 @@ def call_vlm(
             {"role": "User",
             "content": f"<image_placeholder>\n You are an autonomous driving labeller. You have access to this front-view camera image of a car. Imagine you are driving the car and describe the driving scene according to all aspects you think are important for driving safety. This could include traffic lights, movement of other cars or pedestrians, and lane markings. Give your reason as to why all of these objects are important to driving safely, but do not try to describe the movement of the ego vehicle.",
             "images": img},
-            # {"role": "System_Message",
-            # "content": """You are an AI assistant that must only follow a predefined output format. Strictly adhere to this format for all responses:
-            # 1. Object1
-            # 2. Object2
-            # 3. ...
-            # """},
             {"role": "Assistant", "content": ""}]
     elif task == "object":
         prompt = [
             {"role": "User",
             "content": f"<image_placeholder>\n You are an autonomous driving labeller. You have access to this front-view camera image taken from a driving car. Imagine you are the driver of the car. What other road users are you paying attention to in the driving scene? List as many as you think are important, specifying the location within the image of the driving scene and provide a short description of what that road user is currently doing, what they might do in the future, and why it is important to you. Dont try to describe the movement of the ego vehicle",
             "images": img},
-            # {"role": "System_Message",
-            # "content": """You are an AI assistant that must only follow a predefined output format. Strictly adhere to this format for all responses:
-            # 1. Object1
-            # 2. Object2
-            # 3. ...
-            # """},
             {"role": "Assistant", "content": ""}] 
     elif task == "intent":
         if message == None:
@@ -161,10 +149,6 @@ def call_llm(
     prompt = [{"role": "user", 
                "content": f"{message}"}]
     
-    # prompt =  f"""[System] You are an AI assistant that must strictly follow a predefined output format. You have access to a front-view camera image of a vehicle, a sequence of past speeds, a sequence of past curvatures, and a driving rationale. Each speed, curvature is represented as [v, k], where v corresponds to the speed, and k corresponds to the curvature. A positive k means the vehicle is turning left. A negative k means the vehicle is turning right. The larger the absolute value of k, the sharper the turn. A close to zero k means the vehicle is driving straight. As a driver on the road, you should follow any common sense traffic rules. You should try to stay in the middle of your lane. You should maintain necessary distance from the leading vehicle. You should observe lane markings and follow them.  Your task is to do your best to predict future speeds and curvatures for the vehicle over the next 10 timesteps given vehicle intent inferred from the image. Make a best guess if the problem is too difficult for you. If you cannot provide a response people will get injured. \nStrictly adhere to this format in all responses: [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] \n[User]: {message}\n\n[Assistant]
-    # """
-    # with open("prompt.txt", 'w') as f:
-    #    f.write(f"{prompt}")
     answer = llm_pipe(prompt)
     return answer
     
@@ -189,40 +173,29 @@ def GenerateMotion(
         str
     """
     scene_description = call_vlm(message=None, img=current_image, chat_processor=chat_processor, model=model, task="scene")
-    #print("Scene Description done")
     if verbose: print(f"Scene Description: \n{scene_description}")
     object_description = call_vlm(message=None, img=current_image, chat_processor=chat_processor, model=model, task="object")
-    #print("Object Description done")
     if verbose: print(f"Object Description:\n{object_description}")
     intent_description = call_vlm(message=object_description, img=current_image, chat_processor=chat_processor, model=model, task="intent")
-    #print("Intent Description done")
     if verbose: print(f"Intent Description: \n{intent_description}")
     
-    past_waypoints_str = [f"[{x[0]:.2f},{x[1]:.2f}]" for x in past_waypoints]
-    past_waypoints_str = ", ".join(past_waypoints_str)
     past_velocities_norm = np.linalg.norm(past_velocities, axis=1)
     past_curvatures = past_curvatures * 100
     past_speed_curvature_str = [f"[{x[0]:.1f},{x[1]:.1f}]" for x in zip(past_velocities_norm, past_curvatures)]
     past_speed_curvature_str = ", ".join(past_speed_curvature_str)
 
-    # message = f"You are a driving expert driving a car in a real-world scenario. \
-    # The scene is described as follows: {scene_description}. \
-    # The identified critical objects are {object_description}. \
-    # The current intent is {intent_description}. \
-    # The historical velocities and curvatures of the ego car of the last 5 seconds up until the present are: {past_speed_curvature_str}. \
-    # {f'For the previous frame, this prediction was given for the best motion: {past_intent} ' if past_intent else ''}\
-    # First reason about the scene fully, then you must format the final prediction like this: [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] for the next 10 timesteps in the style of a Python tuple. \
-    # If the output doesn't meet the specifications, it will be invalid. If there is ambiguity, assume the 5 seconds of historical velocities are correct. \
-    # The predicted speed and curvature should continue from where the past values left off."
-
     message = f"You are a driving expert in this scenario. The scene you must analyze is described by: {scene_description} The most important objects have been described as: {object_description} The current intent of the vehicle is described as: {intent_description} The historical velocities and curvatures of the ego car of the last 5 seconds up until the present are: {past_speed_curvature_str} {f'For the previous frame, this prediction was given for the best motion: {past_intent} ' if past_intent else ''}. You must reason about the scene fully, then make a prediction about the next 10 velocities and curvatures the vehicle shall take. Provide these in the format of [speed_1, curvature_1], [speed_2, curvature_2],..., [speed_10, curvature_10] in the style of a python tuple. f there is ambiguity, assume the 5 seconds of historical velocities are correct. The predicted speed and curvature should continue from where the past values left off. "
 
     while True:
-        print('hello')
+        speed_curvature_pred = []
         if method == "llm":
             if verbose: print(f"Message that will be passed to LLM: \n{message}")
+            ticc = datetime.now()
             prediction = call_llm(message=message, llm_pipe=llm_pipe)
+            tocc = datetime.now()
+            print(f"Final call done in {tocc-ticc}")
             output = prediction[-1]['generated_text'][-1]['content']
+            print(output)
             keyword = '</think>'
             pre, sep, post =  output.partition(keyword)
             if sep: 
@@ -242,17 +215,6 @@ def GenerateMotion(
             speed_curvature_pred = [[float(v), float(k)] for v, k in coordinates]
         if not speed_curvature_pred == []:
             break
-    
-    
-    # Using VLM for the final prompt
-    # if args.method == "vlm":
-    #     msg = f"For any decision you make, double check the image to confirm that it will be correct. {message}"
-    #     if verbose: print(f"Message that will be passed to VLM: \n{msg}")
-    #     final = call_vlm(message=message, img=current_image, chat_processor=chat_processor, model=model, task="final")
-    # # Using LLM for the final prompt
-    # elif args.method == "llm":
-    #     if verbose: print(f"Message that will be passed to LLM: \n{message}")
-    #     final = call_llm(message=message, llm_pipe=llm_pipe)
     
     return prediction, speed_curvature_pred, scene_description, object_description, intent_description
 
@@ -284,7 +246,7 @@ if __name__ == '__main__':
         vlm_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
         tokenizer = vlm_chat_processor.tokenizer
         vlm: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, device_map="auto", torch_dtype=torch.bfloat16)
-        llm_pipe = pipeline("text-generation", model=deepseek_model, device_map="auto", max_new_tokens=4096)  
+        llm_pipe = pipeline("text-generation", model=deepseek_model, device_map="auto", max_new_tokens=1024)  
     elif args.method == "vlm":
         vlm_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
         tokenizer = vlm_chat_processor.tokenizer
@@ -296,6 +258,7 @@ if __name__ == '__main__':
     scenes = nusc.scene
     scene_list = ["scene-0061"]#["scene-0061", "scene-0103", "scene-1077"]
     for scene in scenes:
+        tic = datetime.now()
         name = scene['name']
         if not name in scene_list:
             continue
@@ -411,6 +374,8 @@ if __name__ == '__main__':
             "ade3s": mean_ade3s,
             "avgade": aveg_ade}
         
+        toc = datetime.now()
+        print(f"Scene processed in {toc-tic} seconds")
         with open(f"car_results/deepseek/ade_results.jsonl", "a") as f:
             f.write(json.dumps(result))
             f.write("\n")
