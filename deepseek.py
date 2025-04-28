@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from math import atan2
 from datetime import datetime
 from nuscenes import NuScenes
-from truckscenes import TruckScenes
+# from truckscenes import TruckScenes
 from transformers import AutoModelForCausalLM, pipeline
 from openemma.YOLO3D.inference import yolo3d_nuScenes
 from Janus.janus.models import MultiModalityCausalLM, VLChatProcessor
@@ -226,9 +226,9 @@ if __name__ == '__main__':
     parser.add_argument("--dataroot", type=str, default="/home/ubuntu/project_ws/OpenEMMA/datasets/nuscenes/nuscenes")
     parser.add_argument("--version", type=str, default="v1.0-mini")
     parser.add_argument("--vehicle", type=str, default="car")
-    parser.add_argument("--verbose", type=bool, default=False)
+    parser.add_argument("--verbose", type=bool, default=True)
     parser.add_argument("--plot", type=bool, default=True)
-    parser.add_argument("--method", type=str, default="llm")
+    parser.add_argument("--method", type=str, default="vlm")
     args = parser.parse_args()
     # VLM model size
     if args.janus_model == "janus1":
@@ -251,6 +251,7 @@ if __name__ == '__main__':
         vlm_chat_processor: VLChatProcessor = VLChatProcessor.from_pretrained(model_path)
         tokenizer = vlm_chat_processor.tokenizer
         vlm: MultiModalityCausalLM = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True, device_map="auto", torch_dtype=torch.bfloat16)
+        llm_pipe = None
 
     local_tz = pytz.timezone("Europe/Stockholm")
     timestamp = datetime.now(local_tz).strftime("%m%d-%H%M")

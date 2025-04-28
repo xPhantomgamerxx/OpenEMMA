@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from math import atan2
 from datetime import datetime
 from nuscenes import NuScenes
-from truckscenes import TruckScenes
+# from truckscenes import TruckScenes
 from transformers import AutoModelForCausalLM, pipeline
 from openemma.YOLO3D.inference import yolo3d_nuScenes
 from Janus.janus.models import MultiModalityCausalLM, VLChatProcessor
@@ -43,6 +43,7 @@ def vlm_inference(
     prepare_inputs = chat_processor(conversations=message, images=pil_images, force_batchify=True).to(model.device)
     
     inputs_embeds = model.prepare_inputs_embeds(**prepare_inputs)
+    print(inputs_embeds.dtype)
 
     outputs = model.language_model.generate(
         inputs_embeds=inputs_embeds,
@@ -73,7 +74,7 @@ annotated_img = "/home/ubuntu/project_ws/OpenEMMA/lane_test/frame_00000011_jpg_a
 raw_img = "/home/ubuntu/project_ws/OpenEMMA/lane_test/frame_00002540.jpg"
 
 prompt = [{"role": "User",
-    "content": f"<image_placeholder>\n Can you give me a single polyline representation for one of the lane dividing lines?",
+    "content": f"<image_placeholder>\n describe this image",
     "images": [raw_img]},
     {"role": "Assistant", "content": ""}]
 
